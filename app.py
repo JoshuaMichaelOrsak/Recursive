@@ -1,4 +1,4 @@
-# app.py — bridge with diagnostics
+# app.py — Poe bridge that makes two bots talk (with diagnostics)
 from typing import AsyncIterable
 import os, traceback, logging
 import fastapi_poe as fp
@@ -6,21 +6,24 @@ import fastapi_poe as fp
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bridge")
 
-TURNS = 4
+TURNS = 4  # how many back-and-forth replies
 
+# Long developer key from https://poe.com/developers
 POE_API_KEY = os.environ.get("POE_API_KEY")
 if not POE_API_KEY:
     raise RuntimeError("Missing POE_API_KEY env var (your long key from poe.com/developers).")
 
 async def call_bot(bot_name: str, message: str) -> str:
+    """Send `message` to `bot_name` and return the full text reply."""
     chunks = []
     try:
         async for event in fp.stream_request(
             bot_name=bot_name,
-            message=message,
+            query=message,          # <-- correct param name
             api_key=POE_API_KEY,
         ):
-            if isinstance(event, fp.TextChunk):
+            # Work with current fastapi_poe event types without assuming exact class names
+            if hasattr(event, "text") and isinstance(getattr(event, "text"), str):
                 chunks.append(event.text)
     except Exception as e:
         log.error("Error calling bot '%s': %s\n%s", bot_name, e, traceback.format_exc())
@@ -31,19 +34,19 @@ class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
         text = (request.query[-1].content or "").strip()
 
-        # quick health check
+        # health check
         if text.lower() == "ping":
             yield fp.PartialResponse(text="pong")
             return
 
-        # accept "bridge ..." or "/bridge ..."
+        # Accept "bridge ..." or "/bridge ..."
         if text.lower().startswith("bridge") or text.lower().startswith("/bridge"):
             try:
                 s = text[1:] if text.startswith("/") else text
                 header, topic = s.split(":", 1)
                 parts = header.strip().split()
                 if len(parts) != 3:
-                    raise ValueError("Bad header. Expected: bridge <botA> <botB>: <topic>")
+                    raise ValueError("Usage: bridge <botA> <botB>: <topic>")
                 _, a, b = parts
                 a, b = a.strip(), b.strip()
                 topic = topic.strip()
@@ -59,11 +62,11 @@ class BridgeBot(fp.PoeBot):
                 return
 
             except Exception as e:
-                # log full traceback; show concise message in Poe
                 log.error("Bridge failed: %s\n%s", e, traceback.format_exc())
                 yield fp.PartialResponse(
                     text=f"Bridge error: {e}\n"
-                         "Check bot handles (use the exact poe.com/<handle> slug) and that POE_API_KEY is set."
+                         "Tips: use the exact poe.com/<handle> slugs (lowercase), "
+                         "and ensure POE_API_KEY is set on Render."
                 )
                 return
 
@@ -74,7 +77,6 @@ class BridgeBot(fp.PoeBot):
         )
 
 app = fp.make_app(BridgeBot())
-# Start: uvicorn app:app --host 0.0.0.0 --port $PORT
-
+# Start on Render with: uvicorn app:app --host 0.0.0.0 --port $PORT
 
 
