@@ -1,46 +1,58 @@
-# app.py  — bridge-only, compatible with current fastapi_poe
+# app.py — Poe bridge that makes two bots talk
 from typing import AsyncIterable
+import os
 import fastapi_poe as fp
 
-TURNS = 4  # number of back-and-forth messages
+TURNS = 4  # how many back-and-forth replies
 
-async def call_other_bot(bot_name: str, message: str, req: fp.QueryRequest) -> str:
-    # Ask another Poe bot and return its full response as a string
-    # Uses the Bot Query API helper; works inside server bots.
-    # (api_key param not needed here when called from a server bot)
-    return await fp.get_final_response(request=req, bot_name=bot_name)
+POE_API_KEY = os.environ.get("POE_API_KEY")
+if not POE_API_KEY:
+    raise RuntimeError("Missing POE_API_KEY env var (your long key from poe.com/developers).")
+
+async def call_bot(bot_name: str, message: str) -> str:
+    chunks = []
+    async for event in fp.stream_request(
+        bot_name=bot_name,
+        message=message,
+        api_key=POE_API_KEY,
+    ):
+        if isinstance(event, fp.TextChunk):
+            chunks.append(event.text)
+    return "".join(chunks).strip()
 
 class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
-        user_text = request.query[-1].content.strip()
+        text = request.query[-1].content.strip()
 
-        # Command format: /bridge botA botB: topic...
-        if user_text.lower().startswith("/bridge"):
+        # Accept "bridge ..." or "/bridge ..."
+        if text.lower().startswith("bridge") or text.lower().startswith("/bridge"):
             try:
-                header, topic = user_text.split(":", 1)
-                _, bot_a, bot_b = header.strip().split()
-                bot_a, bot_b = bot_a.strip(), bot_b.strip()
+                s = text[1:] if text.startswith("/") else text
+                header, topic = s.split(":", 1)
+                _, a, b = header.strip().split()   # bridge a b
+                a, b = a.strip(), b.strip()
                 topic = topic.strip()
             except Exception:
-                yield fp.PartialResponse(text="Usage: /bridge <botA> <botB>: <topic>")
+                yield fp.PartialResponse(
+                    text="Usage: bridge <botA> <botB>: <topic>\nExample: bridge claude-3-5-sonnet gpt-4o: Say hello."
+                )
                 return
 
-            transcript = []
-            speaker = bot_a
-            last_msg = topic
-
+            transcript, speaker, last_msg = [], a, topic
             for _ in range(TURNS):
-                reply = await call_other_bot(speaker, last_msg, request)
+                reply = await call_bot(speaker, last_msg)
                 transcript.append(f"[{speaker}]: {reply}")
-                # swap speaker each turn, feed previous reply
                 last_msg = reply
-                speaker = bot_b if speaker == bot_a else bot_a
+                speaker = b if speaker == a else a
 
             yield fp.PartialResponse(text="\n".join(transcript))
             return
 
-        # Default help text
-        yield fp.PartialResponse(text="Use: /bridge <botA> <botB>: <topic>")
+        # Help for normal messages
+        yield fp.PartialResponse(
+            text="Use: bridge <botA> <botB>: <topic>\nExample: bridge claude-3-5-sonnet gpt-4o: Say hello."
+        )
 
 app = fp.make_app(BridgeBot())
-# Start with: uvicorn app:app --host 0.0.0.0 --port $PORT
+# Start on Render with: uvicorn app:app --host 0.0.0.0 --port $PORT
+
