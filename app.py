@@ -78,5 +78,3 @@ class BridgeBot(fp.PoeBot):
 
 app = fp.make_app(BridgeBot())
 # Start on Render with: uvicorn app:app --host 0.0.0.0 --port $PORT
-
-
