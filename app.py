@@ -1,7 +1,8 @@
-# app.py — Poe bridge (correct positional arg order) + diagnostics
+# app.py — Poe bridge with full HTTP diagnostics
 from typing import AsyncIterable
 import os, traceback, logging
 import fastapi_poe as fp
+import httpx  # for precise HTTP error reporting
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bridge")
@@ -17,10 +18,18 @@ async def call_bot(bot_name: str, message: str) -> str:
     """Send `message` to `bot_name` and return the full text reply."""
     chunks = []
     try:
-        # IMPORTANT: positional order must be (query, bot_name, api_key)
+        # IMPORTANT for your fastapi_poe version: positional order is (query, bot_name, api_key)
         async for event in fp.stream_request(message, bot_name, POE_API_KEY):
             if hasattr(event, "text") and isinstance(getattr(event, "text"), str):
                 chunks.append(event.text)
+    except httpx.HTTPStatusError as e:
+        # Show exact HTTP failure details
+        body = e.response.text if e.response is not None else ""
+        log.error(
+            "HTTP error talking to '%s': %s %s\nResponse: %s\nTraceback:\n%s",
+            bot_name, e.response.status_code if e.response else "?", e, body, traceback.format_exc()
+        )
+        raise RuntimeError(f"HTTP {e.response.status_code if e.response else '?'} from {bot_name}: {body[:300]}") from e
     except Exception as e:
         log.error("Error calling bot '%s': %s\n%s", bot_name, e, traceback.format_exc())
         raise
@@ -58,7 +67,7 @@ class BridgeBot(fp.PoeBot):
                 return
 
             except Exception as e:
-                log.error("Bridge failed: %s\n%s", e, traceback.format_exc())
+                # This shows a concise error in Poe while logs have full details
                 yield fp.PartialResponse(
                     text=f"Bridge error: {e}\n"
                          "Tips: use exact poe.com/<handle> slugs (lowercase) and ensure POE_API_KEY is set."
@@ -72,6 +81,4 @@ class BridgeBot(fp.PoeBot):
         )
 
 app = fp.make_app(BridgeBot())
-# Start on Render: uvicorn app:app --host 0.0.0.0 --port $PORT
-
-
+# Render start: uvicorn app:app --host 0.0.0.0 --port $PORT
