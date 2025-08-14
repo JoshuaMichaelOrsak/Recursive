@@ -1,4 +1,4 @@
-# app.py — Poe bridge that makes two bots talk (with diagnostics)
+# app.py — Poe bridge (positional stream_request args) + diagnostics
 from typing import AsyncIterable
 import os, traceback, logging
 import fastapi_poe as fp
@@ -6,7 +6,7 @@ import fastapi_poe as fp
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bridge")
 
-TURNS = 4  # how many back-and-forth replies
+TURNS = 4  # back-and-forth turns
 
 # Long developer key from https://poe.com/developers
 POE_API_KEY = os.environ.get("POE_API_KEY")
@@ -17,12 +17,8 @@ async def call_bot(bot_name: str, message: str) -> str:
     """Send `message` to `bot_name` and return the full text reply."""
     chunks = []
     try:
-        async for event in fp.stream_request(
-            bot_name=bot_name,
-            query=message,          # <-- correct param name
-            api_key=POE_API_KEY,
-        ):
-            # Work with current fastapi_poe event types without assuming exact class names
+        # NOTE: pass arguments POSITIONALLY for your fastapi_poe version
+        async for event in fp.stream_request(bot_name, message, POE_API_KEY):
             if hasattr(event, "text") and isinstance(getattr(event, "text"), str):
                 chunks.append(event.text)
     except Exception as e:
@@ -34,12 +30,10 @@ class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
         text = (request.query[-1].content or "").strip()
 
-        # health check
         if text.lower() == "ping":
             yield fp.PartialResponse(text="pong")
             return
 
-        # Accept "bridge ..." or "/bridge ..."
         if text.lower().startswith("bridge") or text.lower().startswith("/bridge"):
             try:
                 s = text[1:] if text.startswith("/") else text
@@ -65,16 +59,15 @@ class BridgeBot(fp.PoeBot):
                 log.error("Bridge failed: %s\n%s", e, traceback.format_exc())
                 yield fp.PartialResponse(
                     text=f"Bridge error: {e}\n"
-                         "Tips: use the exact poe.com/<handle> slugs (lowercase), "
-                         "and ensure POE_API_KEY is set on Render."
+                         "Tips: use exact poe.com/<handle> slugs (lowercase) and ensure POE_API_KEY is set."
                 )
                 return
 
-        # help text
         yield fp.PartialResponse(
             text="Use: bridge <botA> <botB>: <topic>\n"
                  "Example: bridge claude-3-5-sonnet gpt-4o: Say hello."
         )
 
 app = fp.make_app(BridgeBot())
-# Start on Render with: uvicorn app:app --host 0.0.0.0 --port $PORT
+# Render start: uvicorn app:app --host 0.0.0.0 --port $PORT
+
