@@ -1,4 +1,4 @@
-fastapi-poe>=0.0.90
+fastapi-poe>=0.0.36
 fastapi
 uvicorn
 httpx
