@@ -1,4 +1,4 @@
-# app.py — Poe bridge (positional stream_request args) + diagnostics
+# app.py — Poe bridge (correct positional arg order) + diagnostics
 from typing import AsyncIterable
 import os, traceback, logging
 import fastapi_poe as fp
@@ -6,7 +6,7 @@ import fastapi_poe as fp
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bridge")
 
-TURNS = 4  # back-and-forth turns
+TURNS = 4  # number of back-and-forth turns
 
 # Long developer key from https://poe.com/developers
 POE_API_KEY = os.environ.get("POE_API_KEY")
@@ -17,8 +17,8 @@ async def call_bot(bot_name: str, message: str) -> str:
     """Send `message` to `bot_name` and return the full text reply."""
     chunks = []
     try:
-        # NOTE: pass arguments POSITIONALLY for your fastapi_poe version
-        async for event in fp.stream_request(bot_name, message, POE_API_KEY):
+        # IMPORTANT: positional order must be (query, bot_name, api_key)
+        async for event in fp.stream_request(message, bot_name, POE_API_KEY):
             if hasattr(event, "text") and isinstance(getattr(event, "text"), str):
                 chunks.append(event.text)
     except Exception as e:
@@ -30,10 +30,12 @@ class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
         text = (request.query[-1].content or "").strip()
 
+        # quick health check
         if text.lower() == "ping":
             yield fp.PartialResponse(text="pong")
             return
 
+        # Accept "bridge ..." or "/bridge ..."
         if text.lower().startswith("bridge") or text.lower().startswith("/bridge"):
             try:
                 s = text[1:] if text.startswith("/") else text
@@ -63,11 +65,13 @@ class BridgeBot(fp.PoeBot):
                 )
                 return
 
+        # help text
         yield fp.PartialResponse(
             text="Use: bridge <botA> <botB>: <topic>\n"
                  "Example: bridge claude-3-5-sonnet gpt-4o: Say hello."
         )
 
 app = fp.make_app(BridgeBot())
-# Render start: uvicorn app:app --host 0.0.0.0 --port $PORT
+# Start on Render: uvicorn app:app --host 0.0.0.0 --port $PORT
+
 
