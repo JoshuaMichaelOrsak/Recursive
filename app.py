@@ -1,85 +1,46 @@
-# app.py
-import asyncio
-import fastapi_poe as fp
+# app.py  — bridge-only, compatible with current fastapi_poe
 from typing import AsyncIterable
+import fastapi_poe as fp
 
-TURNS = 4  # how many back-and-forth turns for bridge mode
-CRITIC_BOT = "gpt-4o"       # a strong critic model on Poe
-DEFAULT_HELPER = "claude-3-5-sonnet"  # helper/second-opinion
+TURNS = 4  # number of back-and-forth messages
 
-def as_text(content: fp.Content) -> str:
-    if content.type == "text":
-        return content.text or ""
-    return ""
+async def call_other_bot(bot_name: str, message: str, req: fp.QueryRequest) -> str:
+    # Ask another Poe bot and return its full response as a string
+    # Uses the Bot Query API helper; works inside server bots.
+    # (api_key param not needed here when called from a server bot)
+    return await fp.get_final_response(request=req, bot_name=bot_name)
 
-async def call_poe(bot: str, prompt: str, meta: fp.Meta) -> str:
-    out = []
-    async for event in fp.stream_request(
-        bot_name=bot,
-        message=prompt,
-        api_key=meta.api_key,
-        # Pass along the conversation visibility & user meta
-        metadata=fp.RequestMetadata(user_id=meta.user_id),
-    ):
-        if isinstance(event, fp.TextChunk):
-            out.append(event.text)
-    return "".join(out).strip()
-
-class BridgeAndReflectBot(fp.PoeBot):
+class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
-        meta = request.meta
-        user_msg = as_text(request.query[0].content[0])
+        user_text = request.query[-1].content.strip()
 
-        # Mode A: Bridge two bots
-        if user_msg.lower().startswith("/bridge"):
-            # Format: /bridge botA botB: topic...
+        # Command format: /bridge botA botB: topic...
+        if user_text.lower().startswith("/bridge"):
             try:
-                header, topic = user_msg.split(":", 1)
-                _, a, b = header.strip().split()  # /bridge a b
-                a, b = a.strip(), b.strip()
+                header, topic = user_text.split(":", 1)
+                _, bot_a, bot_b = header.strip().split()
+                bot_a, bot_b = bot_a.strip(), bot_b.strip()
                 topic = topic.strip()
             except Exception:
                 yield fp.PartialResponse(text="Usage: /bridge <botA> <botB>: <topic>")
                 return
 
             transcript = []
-            speaker, listener = a, b
+            speaker = bot_a
             last_msg = topic
 
-            for i in range(TURNS):
-                reply = await call_poe(speaker, last_msg, meta)
+            for _ in range(TURNS):
+                reply = await call_other_bot(speaker, last_msg, request)
                 transcript.append(f"[{speaker}]: {reply}")
-                # next turn: swap
+                # swap speaker each turn, feed previous reply
                 last_msg = reply
-                speaker, listener = listener, speaker
+                speaker = bot_b if speaker == bot_a else bot_a
 
             yield fp.PartialResponse(text="\n".join(transcript))
             return
 
-        # Mode B: Recursive Mind (draft -> critique -> revise)
-        # 1) Draft with your preferred helper model
-        draft = await call_poe(DEFAULT_HELPER, f"Draft a helpful answer to:\n{user_msg}", meta)
+        # Default help text
+        yield fp.PartialResponse(text="Use: /bridge <botA> <botB>: <topic>")
 
-        # 2) Critique with a critic model
-        critique_prompt = (
-            "CRITIC TASK: Evaluate the DRAFT for accuracy, clarity, safety, and completeness. "
-            "List concrete edits without rewriting everything. Then provide a revised answer.\n\n"
-            f"DRAFT:\n{draft}"
-        )
-        critique = await call_poe(CRITIC_BOT, critique_prompt, meta)
-
-        # 3) (Optional) Second opinion & merge
-        merge_prompt = (
-            "Merge the following into one final, concise, high-quality answer. "
-            "Prefer factual accuracy and clear steps. If any unsafe or speculative content appears, remove it.\n\n"
-            f"USER:\n{user_msg}\n\nCRITIQUE+REVISION:\n{critique}"
-        )
-        final_answer = await call_poe(DEFAULT_HELPER, merge_prompt, meta)
-
-        yield fp.PartialResponse(text=final_answer)
-
-app = fp.make_app(BridgeAndReflectBot())
-
-if __name__ == "__main__":
-    # Local run helper; in prod deploy behind uvicorn/gunicorn
-    fp.run(BridgeAndReflectBot())
+app = fp.make_app(BridgeBot())
+# Start with: uvicorn app:app --host 0.0.0.0 --port $PORT
