@@ -1,8 +1,8 @@
-# app.py — Poe bridge with full HTTP diagnostics
+# app.py — Poe bridge using BotClient (works with string messages) + diagnostics
 from typing import AsyncIterable
 import os, traceback, logging
 import fastapi_poe as fp
-import httpx  # for precise HTTP error reporting
+from fastapi_poe.client import BotClient  # <-- use the client helper that accepts strings
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bridge")
@@ -14,26 +14,22 @@ POE_API_KEY = os.environ.get("POE_API_KEY")
 if not POE_API_KEY:
     raise RuntimeError("Missing POE_API_KEY env var (your long key from poe.com/developers).")
 
+# A single reusable client for outbound Poe calls
+bot_client = BotClient(POE_API_KEY)
+
 async def call_bot(bot_name: str, message: str) -> str:
     """Send `message` to `bot_name` and return the full text reply."""
-    chunks = []
+    parts: list[str] = []
     try:
-        # IMPORTANT for your fastapi_poe version: positional order is (query, bot_name, api_key)
-        async for event in fp.stream_request(message, bot_name, POE_API_KEY):
+        # BotClient.send_message accepts a plain string and handles message IDs internally
+        async for event in bot_client.send_message(bot_name, message):
+            # coalesce any event that has a 'text' attribute
             if hasattr(event, "text") and isinstance(getattr(event, "text"), str):
-                chunks.append(event.text)
-    except httpx.HTTPStatusError as e:
-        # Show exact HTTP failure details
-        body = e.response.text if e.response is not None else ""
-        log.error(
-            "HTTP error talking to '%s': %s %s\nResponse: %s\nTraceback:\n%s",
-            bot_name, e.response.status_code if e.response else "?", e, body, traceback.format_exc()
-        )
-        raise RuntimeError(f"HTTP {e.response.status_code if e.response else '?'} from {bot_name}: {body[:300]}") from e
+                parts.append(event.text)
     except Exception as e:
         log.error("Error calling bot '%s': %s\n%s", bot_name, e, traceback.format_exc())
         raise
-    return "".join(chunks).strip()
+    return "".join(parts).strip()
 
 class BridgeBot(fp.PoeBot):
     async def get_response(self, request: fp.QueryRequest) -> AsyncIterable[fp.PartialResponse]:
@@ -67,7 +63,7 @@ class BridgeBot(fp.PoeBot):
                 return
 
             except Exception as e:
-                # This shows a concise error in Poe while logs have full details
+                # concise error to Poe; full traceback is in Render logs
                 yield fp.PartialResponse(
                     text=f"Bridge error: {e}\n"
                          "Tips: use exact poe.com/<handle> slugs (lowercase) and ensure POE_API_KEY is set."
@@ -81,4 +77,5 @@ class BridgeBot(fp.PoeBot):
         )
 
 app = fp.make_app(BridgeBot())
-# Render start: uvicorn app:app --host 0.0.0.0 --port $PORT
+# Start on Render: uvicorn app:app --host 0.0.0.0 --port $PORT
+
